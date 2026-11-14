@@ -17,8 +17,11 @@ sys.path.insert(0, str(ROOT / "instance"))
 
 import comfy_client  # noqa: E402
 import download_models  # noqa: E402
-import templateutil  # noqa: E402
 import workflows  # noqa: E402
+
+sys.path.insert(0, str(ROOT / "worker"))
+import entrypoint  # noqa: E402
+import reconcile  # noqa: E402
 
 
 class ManifestTests(unittest.TestCase):
@@ -180,21 +183,37 @@ class DownloadTests(unittest.TestCase):
             download_models.ensure_model(model, Path("/tmp"), lambda: None, runner, sleep, clock)
 
 
-class TemplateTests(unittest.TestCase):
-    def test_user_data_renders_under_the_ec2_limit(self) -> None:
-        rendered = templateutil.render_user_data()
-        self.assertLess(len(rendered.encode()), 16000)
-        self.assertIn("ai-image-studio-example", rendered)
-        self.assertIn("vol-0123456789abcdef0", rendered)
-        self.assertNotIn("${bucket}", rendered)
-        self.assertIn("${TOKEN}", rendered)
-        self.assertIn("OnBootSec=240min", rendered)
+class ImageChoiceTests(unittest.TestCase):
+    def test_worker_image_does_not_bake_weights(self) -> None:
+        text = (ROOT / "worker" / "Dockerfile").read_text(encoding="utf-8")
+        self.assertNotIn("huggingface.co", text.lower())
+        self.assertIn("v0.45.0", text)
+        self.assertIn("models.manifest.json", text)
+
+    def test_missing_required_weights_are_detected(self) -> None:
+        manifest = {"models": [{"id": "flux_vae", "required": True, "dest": "models/vae/ae.safetensors", "min_bytes": 10}]}
+        self.assertEqual(entrypoint.missing_required(Path("/no/such"), manifest), ["flux_vae"])
+
+    def test_reconciler_selects_only_stale_resources(self) -> None:
+        jobs = [
+            {"jobId": "old", "status": "RUNNING", "startedAt": 1_000},
+            {"jobId": "new", "status": "RUNNING", "startedAt": 9_000},
+            {"jobId": "done", "status": "SUCCEEDED", "startedAt": 1_000},
+        ]
+        self.assertEqual(reconcile.stale_job_ids(jobs, now_ms=10_000, max_age_ms=5_000), ["old"])
+        instances = [
+            {"id": "i-old", "state": "running", "launch_epoch": 100},
+            {"id": "i-new", "state": "running", "launch_epoch": 900},
+        ]
+        self.assertEqual(reconcile.stale_instance_ids(instances, now_epoch=1_000, max_age_seconds=500), ["i-old"])
+        volumes = [{"id": "vol-old", "state": "available", "create_epoch": 100}, {"id": "vol-used", "state": "in-use", "create_epoch": 100}]
+        self.assertEqual(reconcile.orphan_volume_ids(volumes, now_epoch=1_000, min_age_seconds=500), ["vol-old"])
 
 
 class DryRunTests(unittest.TestCase):
-    def test_generate_dry_run_prints_a_workflow(self) -> None:
+    def test_run_dry_run_prints_a_workflow(self) -> None:
         result = subprocess.run(
-            [sys.executable, str(CLI / "studio.py"), "generate", "--prompt", "a red ceramic teapot", "--dry-run", "--seed", "3"],
+            [sys.executable, str(CLI / "studio.py"), "run", "--prompt", "a red ceramic teapot", "--dry-run", "--seed", "3"],
             check=False,
             capture_output=True,
             text=True,
@@ -207,7 +226,7 @@ class DryRunTests(unittest.TestCase):
 
     def test_bad_dimension_is_a_usage_error(self) -> None:
         result = subprocess.run(
-            [sys.executable, str(CLI / "studio.py"), "generate", "--prompt", "teapot", "--width", "1000", "--dry-run"],
+            [sys.executable, str(CLI / "studio.py"), "run", "--prompt", "teapot", "--width", "1000", "--dry-run"],
             check=False,
             capture_output=True,
             text=True,

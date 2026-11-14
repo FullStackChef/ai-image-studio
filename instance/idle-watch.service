@@ -1,7 +1,0 @@
-[Unit]
-Description=Stop the GPU instance when ComfyUI is idle
-After=network-online.target
-
-[Service]
-Type=oneshot
-ExecStart=/usr/local/sbin/ai-image-studio-idle-watch

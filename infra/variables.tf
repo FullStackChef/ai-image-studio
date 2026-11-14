@@ -1,11 +1,11 @@
 variable "aws_region" {
   type        = string
-  description = "Region for this isolated stack. GPU quota and the DLAMI parameter must exist here."
-  default     = "us-east-1"
+  description = "Region for this stack. Sydney is the default because the owner is in New Zealand."
+  default     = "ap-southeast-2"
 
   validation {
     condition     = can(regex("^[a-z]{2}-[a-z]+-[0-9]+$", var.aws_region))
-    error_message = "aws_region must look like us-east-1."
+    error_message = "aws_region must look like ap-southeast-2."
   }
 }
 
@@ -21,7 +21,7 @@ variable "alert_email" {
 
 variable "instance_type" {
   type        = string
-  description = "GPU instance type. g6.xlarge (NVIDIA L4, 24 GiB) is the default. g5.xlarge also fits these models."
+  description = "GPU instance type Batch may launch. g6.xlarge is one L4 with 16 GiB of system RAM. Use g6.2xlarge if a job is killed for lack of memory, and raise max_vcpus to match."
   default     = "g6.xlarge"
 
   validation {
@@ -30,42 +30,58 @@ variable "instance_type" {
   }
 }
 
-variable "use_spot" {
-  type        = bool
-  description = "Request a persistent Spot instance that stops on interruption. Default is on-demand so a job is not killed mid-generation."
-  default     = false
-}
-
-variable "data_volume_gb" {
+variable "max_vcpus" {
   type        = number
-  description = "Encrypted gp3 volume for ComfyUI and cached weights. 120 GiB holds FLUX schnell fp8, optional SDXL, IP-Adapter, and an 8 GiB swap file."
-  default     = 120
+  description = "Ceiling for the Batch compute environment. 4 is one g6.xlarge, so two jobs cannot run at once."
+  default     = 4
 
   validation {
-    condition     = var.data_volume_gb >= 80 && var.data_volume_gb <= 2048
-    error_message = "data_volume_gb must be between 80 and 2048."
+    condition     = var.max_vcpus >= 4 && var.max_vcpus <= 32
+    error_message = "max_vcpus must be between 4 and 32."
   }
 }
 
-variable "idle_minutes" {
+variable "job_vcpus" {
   type        = number
-  description = "Stop the instance after this many minutes with an empty ComfyUI queue, low GPU use, and no open UI connection."
-  default     = 30
+  description = "vCPUs reserved by one job. Must fit the instance type."
+  default     = 4
 
   validation {
-    condition     = var.idle_minutes >= 5 && var.idle_minutes <= 720
-    error_message = "idle_minutes must be between 5 and 720."
+    condition     = var.job_vcpus >= 1 && var.job_vcpus <= 32
+    error_message = "job_vcpus must be between 1 and 32."
   }
 }
 
-variable "setup_failsafe_minutes" {
+variable "job_memory_mb" {
   type        = number
-  description = "Stop the instance if first-boot setup is still incomplete after this many minutes."
-  default     = 240
+  description = "Memory in MiB reserved by one job. Leave headroom for the ECS agent on a 16 GiB g6.xlarge."
+  default     = 14336
 
   validation {
-    condition     = var.setup_failsafe_minutes >= 30 && var.setup_failsafe_minutes <= 720
-    error_message = "setup_failsafe_minutes must be between 30 and 720."
+    condition     = var.job_memory_mb >= 4096 && var.job_memory_mb <= 65536
+    error_message = "job_memory_mb must be between 4096 and 65536."
+  }
+}
+
+variable "root_volume_gb" {
+  type        = number
+  description = "Root disk created with each Batch instance and deleted when that instance is terminated. It only holds the container and a scratch copy of the weights for that job."
+  default     = 100
+
+  validation {
+    condition     = var.root_volume_gb >= 80 && var.root_volume_gb <= 500
+    error_message = "root_volume_gb must be between 80 and 500."
+  }
+}
+
+variable "job_timeout_minutes" {
+  type        = number
+  description = "Batch attempt timeout. The reconciler terminates older jobs and worker instances."
+  default     = 180
+
+  validation {
+    condition     = var.job_timeout_minutes >= 30 && var.job_timeout_minutes <= 720
+    error_message = "job_timeout_minutes must be between 30 and 720."
   }
 }
 
@@ -91,8 +107,13 @@ variable "output_retention_days" {
   }
 }
 
-variable "gpu_ami_ssm_parameter" {
+variable "image_tag" {
   type        = string
-  description = "Public SSM parameter that resolves to the Deep Learning Base OSS NVIDIA GPU AMI (Ubuntu 22.04) at apply time."
-  default     = "/aws/service/deeplearning/ami/x86_64/base-oss-nvidia-driver-gpu-ubuntu-22.04/latest/ami-id"
+  description = "Mutable ECR tag the job runs. scripts/build-image.sh publishes this tag."
+  default     = "worker"
+
+  validation {
+    condition     = can(regex("^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$", var.image_tag))
+    error_message = "image_tag must be an ECR tag."
+  }
 }

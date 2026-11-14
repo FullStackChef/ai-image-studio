@@ -1,8 +1,19 @@
-# Isolated network for this project only. There is no NAT gateway and no
-# interface VPC endpoint: those charge money while the GPU is stopped.
-# The instance gets a public address so the SSM agent, package mirrors, and
-# model downloads can make outbound connections. The security group and
-# network ACL allow no inbound service ports, and ComfyUI binds to localhost.
+# Isolated network. No NAT gateway and no interface endpoints: those bill
+# while nothing is running. Batch workers get a public address only for the
+# life of a job so they can pull the container and, on the first run, reach
+# Hugging Face. The S3 gateway endpoint is free. The security group has no
+# inbound rules, and ComfyUI binds to loopback inside the container.
+
+resource "aws_vpc_endpoint" "s3" {
+  vpc_id            = aws_vpc.main.id
+  service_name      = "com.amazonaws.${var.aws_region}.s3"
+  vpc_endpoint_type = "Gateway"
+  route_table_ids   = [aws_route_table.public.id]
+
+  tags = {
+    Name = "ai-image-studio-s3"
+  }
+}
 
 resource "aws_vpc" "main" {
   cidr_block           = "10.42.0.0/16"

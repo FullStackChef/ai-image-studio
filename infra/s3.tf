@@ -90,6 +90,32 @@ resource "aws_s3_bucket_lifecycle_configuration" "studio" {
     }
   }
 
+  rule {
+    id     = "expire-jobs"
+    status = "Enabled"
+
+    filter {
+      prefix = "jobs/"
+    }
+
+    expiration {
+      days = 14
+    }
+  }
+
+  rule {
+    id     = "expire-build-source"
+    status = "Enabled"
+
+    filter {
+      prefix = "builds/"
+    }
+
+    expiration {
+      days = 14
+    }
+  }
+
   dynamic "rule" {
     for_each = var.output_retention_days > 0 ? [var.output_retention_days] : []
 
@@ -108,18 +134,3 @@ resource "aws_s3_bucket_lifecycle_configuration" "studio" {
   }
 }
 
-resource "aws_s3_object" "bootstrap" {
-  for_each = local.bootstrap_files
-
-  bucket = aws_s3_bucket.studio.id
-  key    = each.key
-  source = each.value
-  etag   = filemd5(each.value)
-
-  depends_on = [
-    aws_s3_bucket_public_access_block.studio,
-    aws_s3_bucket_ownership_controls.studio,
-    aws_s3_bucket_server_side_encryption_configuration.studio,
-    aws_s3_bucket_policy.studio,
-  ]
-}

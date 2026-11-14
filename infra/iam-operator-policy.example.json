@@ -2,52 +2,20 @@
   "Version": "2012-10-17",
   "Statement": [
     {
-      "Sid": "StudioCompute",
+      "Sid": "StudioJobs",
       "Effect": "Allow",
       "Action": [
-        "ec2:StartInstances",
-        "ec2:StopInstances"
-      ],
-      "Resource": "arn:aws:ec2:REGION:ACCOUNT:instance/INSTANCE_ID",
-      "Condition": {
-        "StringEquals": {
-          "aws:ResourceTag/project": "ai-image-studio"
-        }
-      }
-    },
-    {
-      "Sid": "StudioDescribe",
-      "Effect": "Allow",
-      "Action": [
-        "ec2:DescribeInstances",
-        "ec2:DescribeInstanceStatus"
+        "batch:SubmitJob",
+        "batch:DescribeJobs"
       ],
       "Resource": "*"
     },
     {
-      "Sid": "StudioSession",
+      "Sid": "StudioBuild",
       "Effect": "Allow",
       "Action": [
-        "ssm:StartSession",
-        "ssm:SendCommand"
-      ],
-      "Resource": [
-        "arn:aws:ec2:REGION:ACCOUNT:instance/INSTANCE_ID",
-        "arn:aws:ssm:REGION::document/AWS-StartPortForwardingSession",
-        "arn:aws:ssm:REGION::document/AWS-StartSession",
-        "arn:aws:ssm:REGION:ACCOUNT:document/SSM-SessionManagerRunShell",
-        "arn:aws:ssm:REGION::document/AWS-RunShellScript"
-      ]
-    },
-    {
-      "Sid": "StudioSessionChannels",
-      "Effect": "Allow",
-      "Action": [
-        "ssm:TerminateSession",
-        "ssm:ResumeSession",
-        "ssm:DescribeInstanceInformation",
-        "ssm:GetCommandInvocation",
-        "ssm:ListCommandInvocations"
+        "codebuild:StartBuild",
+        "codebuild:BatchGetBuilds"
       ],
       "Resource": "*"
     },
@@ -76,6 +44,16 @@
         "s3:PutObject"
       ],
       "Resource": "arn:aws:s3:::BUCKET/*"
+    },
+    {
+      "Sid": "StudioLogs",
+      "Effect": "Allow",
+      "Action": [
+        "logs:GetLogEvents",
+        "logs:FilterLogEvents",
+        "logs:DescribeLogStreams"
+      ],
+      "Resource": "arn:aws:logs:REGION:ACCOUNT:log-group:/ai-image-studio/*"
     }
   ]
 }

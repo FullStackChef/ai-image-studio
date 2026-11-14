@@ -1,9 +1,3 @@
-resource "aws_ssm_parameter" "instance_id" {
-  name  = "/ai-image-studio/instance-id"
-  type  = "String"
-  value = aws_instance.gpu.id
-}
-
 resource "aws_ssm_parameter" "bucket_name" {
   name  = "/ai-image-studio/bucket-name"
   type  = "String"
@@ -16,15 +10,27 @@ resource "aws_ssm_parameter" "region" {
   value = var.aws_region
 }
 
-resource "aws_ssm_parameter" "idle_minutes" {
-  name  = "/ai-image-studio/idle-minutes"
+resource "aws_ssm_parameter" "job_queue" {
+  name  = "/ai-image-studio/job-queue"
   type  = "String"
-  value = tostring(var.idle_minutes)
+  value = aws_batch_job_queue.gpu.name
+}
+
+resource "aws_ssm_parameter" "job_definition" {
+  name  = "/ai-image-studio/job-definition"
+  type  = "String"
+  value = aws_batch_job_definition.worker.name
+}
+
+resource "aws_ssm_parameter" "image_build_project" {
+  name  = "/ai-image-studio/image-build-project"
+  type  = "String"
+  value = aws_codebuild_project.worker.name
 }
 
 resource "aws_ssm_parameter" "hf_token" {
   name        = "/ai-image-studio/hf-token"
-  description = "Optional Hugging Face token used only on the instance. scripts/deploy.sh overwrites this; Terraform will not change it again."
+  description = "Optional Hugging Face token. scripts/deploy.sh overwrites this; Terraform will not change it again."
   type        = "SecureString"
   value       = "unset"
 

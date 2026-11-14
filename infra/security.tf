@@ -1,10 +1,10 @@
 resource "aws_security_group" "gpu" {
   name        = "ai-image-studio-gpu"
-  description = "No inbound access. Egress only for SSM, S3, package mirrors, and model downloads."
+  description = "No inbound access. Egress only for ECR, CloudWatch, S3, and the first-run model download."
   vpc_id      = aws_vpc.main.id
 
   egress {
-    description = "HTTPS for SSM, S3, git, and Hugging Face"
+    description = "HTTPS for ECR, CloudWatch, S3, and Hugging Face"
     from_port   = 443
     to_port     = 443
     protocol    = "tcp"

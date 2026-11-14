@@ -24,14 +24,6 @@ ssm_param() {
   aws ssm get-parameter --region "$region" --name "$name" --query Parameter.Value --output text
 }
 
-studio_instance_id() {
-  if [[ -n "${INSTANCE_ID:-}" ]]; then
-    printf '%s\n' "$INSTANCE_ID"
-    return
-  fi
-  ssm_param /ai-image-studio/instance-id
-}
-
 studio_bucket() {
   if [[ -n "${BUCKET:-}" ]]; then
     printf '%s\n' "$BUCKET"
@@ -51,8 +43,6 @@ build_tf_args() {
     TF_ARGS+=(-var "aws_region=${AWS_REGION}")
   elif [[ -n "${AWS_DEFAULT_REGION:-}" ]]; then
     TF_ARGS+=(-var "aws_region=${AWS_DEFAULT_REGION}")
-  elif [[ ! -f terraform.tfvars ]]; then
-    TF_ARGS+=(-var aws_region=us-east-1)
   fi
   if [[ -n "${ALERT_EMAIL:-}" ]]; then
     TF_ARGS+=(-var "alert_email=${ALERT_EMAIL}")
@@ -60,20 +50,17 @@ build_tf_args() {
   if [[ -n "${INSTANCE_TYPE:-}" ]]; then
     TF_ARGS+=(-var "instance_type=${INSTANCE_TYPE}")
   fi
-  if [[ -n "${USE_SPOT:-}" ]]; then
-    TF_ARGS+=(-var "use_spot=${USE_SPOT}")
+  if [[ -n "${MAX_VCPUS:-}" ]]; then
+    TF_ARGS+=(-var "max_vcpus=${MAX_VCPUS}")
+  fi
+  if [[ -n "${JOB_TIMEOUT_MINUTES:-}" ]]; then
+    TF_ARGS+=(-var "job_timeout_minutes=${JOB_TIMEOUT_MINUTES}")
+  fi
+  if [[ -n "${ROOT_VOLUME_GB:-}" ]]; then
+    TF_ARGS+=(-var "root_volume_gb=${ROOT_VOLUME_GB}")
   fi
   if [[ -n "${MONTHLY_BUDGET_USD:-}" ]]; then
     TF_ARGS+=(-var "monthly_budget_usd=${MONTHLY_BUDGET_USD}")
-  fi
-  if [[ -n "${IDLE_MINUTES:-}" ]]; then
-    TF_ARGS+=(-var "idle_minutes=${IDLE_MINUTES}")
-  fi
-  if [[ -n "${DATA_VOLUME_GB:-}" ]]; then
-    TF_ARGS+=(-var "data_volume_gb=${DATA_VOLUME_GB}")
-  fi
-  if [[ -n "${SETUP_FAILSAFE_MINUTES:-}" ]]; then
-    TF_ARGS+=(-var "setup_failsafe_minutes=${SETUP_FAILSAFE_MINUTES}")
   fi
   if [[ -n "${OUTPUT_RETENTION_DAYS:-}" ]]; then
     TF_ARGS+=(-var "output_retention_days=${OUTPUT_RETENTION_DAYS}")

@@ -46,11 +46,11 @@ def model_filename(manifest: dict, model_id: str) -> str:
 def resolve_mode(mode: str, init: Path | None, mask: Path | None, reference: Path | None) -> str:
     if mode == "auto":
         if mask and reference:
-            raise ValueError("use --mask with --init for inpaint, or --reference on its own")
+            raise ValueError("use --mask with --input for inpaint, or --reference on its own")
         if mask:
             chosen = "inpaint"
         elif reference and init:
-            raise ValueError("pass either --reference or --init, or set --mode")
+            raise ValueError("pass either --reference or --input, or set --mode")
         elif reference:
             chosen = "reference"
         elif init:
@@ -61,13 +61,13 @@ def resolve_mode(mode: str, init: Path | None, mask: Path | None, reference: Pat
         chosen = mode
 
     if chosen == "inpaint" and (init is None or mask is None):
-        raise ValueError("inpaint requires --init and --mask")
+        raise ValueError("inpaint requires --input and --mask")
     if chosen == "img2img" and init is None:
-        raise ValueError("img2img requires --init")
+        raise ValueError("img2img requires --input")
     if chosen == "reference" and reference is None:
         raise ValueError("reference requires --reference")
     if chosen == "txt2img" and (init or mask or reference):
-        raise ValueError("txt2img does not use --init, --mask, or --reference")
+        raise ValueError("txt2img does not use --input, --mask, or --reference")
     if mask and chosen != "inpaint":
         raise ValueError("--mask is only used for inpaint")
     return chosen

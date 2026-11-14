@@ -1,7 +1,7 @@
-aws_region         = "us-east-1"
-alert_email        = "you@example.com"
-instance_type      = "g6.xlarge"
-use_spot           = false
-monthly_budget_usd = 50
-idle_minutes       = 30
-data_volume_gb     = 120
+aws_region          = "ap-southeast-2"
+alert_email         = "you@example.com"
+instance_type       = "g6.xlarge"
+max_vcpus           = 4
+monthly_budget_usd  = 50
+job_timeout_minutes = 180
+root_volume_gb      = 100

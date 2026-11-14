@@ -1,10 +1,5 @@
-output "instance_id" {
-  description = "GPU instance. It is stopped after first-boot setup and after idle periods."
-  value       = aws_instance.gpu.id
-}
-
 output "bucket_name" {
-  description = "Private bucket for bootstrap files, logs, and generated images."
+  description = "Private bucket. Weights live under weights/, results under outputs/."
   value       = aws_s3_bucket.studio.bucket
 }
 
@@ -17,12 +12,20 @@ output "region" {
   value = var.aws_region
 }
 
-output "data_volume_id" {
-  description = "Encrypted volume that caches ComfyUI and model weights."
-  value       = aws_ebs_volume.models.id
+output "job_queue" {
+  description = "Batch queue. It stays at zero instances when no job is running."
+  value       = aws_batch_job_queue.gpu.name
 }
 
-output "port_forward_command" {
-  description = "Tunnel localhost:8188 to ComfyUI. The process holds the tunnel open."
-  value       = "aws ssm start-session --region ${var.aws_region} --target ${aws_instance.gpu.id} --document-name AWS-StartPortForwardingSession --parameters portNumber=8188,localPortNumber=8188"
+output "job_definition" {
+  value = aws_batch_job_definition.worker.name
+}
+
+output "worker_image" {
+  description = "ECR image scripts/build-image.sh publishes. It does not contain model weights."
+  value       = "${aws_ecr_repository.worker.repository_url}:${var.image_tag}"
+}
+
+output "image_build_project" {
+  value = aws_codebuild_project.worker.name
 }
