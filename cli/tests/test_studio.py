@@ -20,8 +20,9 @@ import download_models  # noqa: E402
 import workflows  # noqa: E402
 
 sys.path.insert(0, str(ROOT / "worker"))
-import entrypoint  # noqa: E402
-import reconcile  # noqa: E402
+sys.path.insert(0, str(CLI))
+import handler  # noqa: E402
+import runpod_client  # noqa: E402
 
 
 class ManifestTests(unittest.TestCase):
@@ -183,31 +184,49 @@ class DownloadTests(unittest.TestCase):
             download_models.ensure_model(model, Path("/tmp"), lambda: None, runner, sleep, clock)
 
 
-class ImageChoiceTests(unittest.TestCase):
+class RunPodTests(unittest.TestCase):
     def test_worker_image_does_not_bake_weights(self) -> None:
         text = (ROOT / "worker" / "Dockerfile").read_text(encoding="utf-8")
         self.assertNotIn("huggingface.co", text.lower())
         self.assertIn("v0.45.0", text)
-        self.assertIn("models.manifest.json", text)
+        self.assertIn("handler.py", text)
 
-    def test_missing_required_weights_are_detected(self) -> None:
-        manifest = {"models": [{"id": "flux_vae", "required": True, "dest": "models/vae/ae.safetensors", "min_bytes": 10}]}
-        self.assertEqual(entrypoint.missing_required(Path("/no/such"), manifest), ["flux_vae"])
+    def test_network_volume_is_linked_over_the_image_tree(self) -> None:
+        import tempfile
 
-    def test_reconciler_selects_only_stale_resources(self) -> None:
-        jobs = [
-            {"jobId": "old", "status": "RUNNING", "startedAt": 1_000},
-            {"jobId": "new", "status": "RUNNING", "startedAt": 9_000},
-            {"jobId": "done", "status": "SUCCEEDED", "startedAt": 1_000},
-        ]
-        self.assertEqual(reconcile.stale_job_ids(jobs, now_ms=10_000, max_age_ms=5_000), ["old"])
-        instances = [
-            {"id": "i-old", "state": "running", "launch_epoch": 100},
-            {"id": "i-new", "state": "running", "launch_epoch": 900},
-        ]
-        self.assertEqual(reconcile.stale_instance_ids(instances, now_epoch=1_000, max_age_seconds=500), ["i-old"])
-        volumes = [{"id": "vol-old", "state": "available", "create_epoch": 100}, {"id": "vol-used", "state": "in-use", "create_epoch": 100}]
-        self.assertEqual(reconcile.orphan_volume_ids(volumes, now_epoch=1_000, min_age_seconds=500), ["vol-old"])
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            volume = root / "volume"
+            comfy = root / "ComfyUI"
+            (volume / "models" / "unet").mkdir(parents=True)
+            (volume / "models" / "unet" / "flux.safetensors").write_bytes(b"weights")
+            (comfy / "models" / "unet").mkdir(parents=True)
+            handler.link_models(volume, comfy)
+            self.assertTrue((comfy / "models").is_symlink())
+            self.assertEqual((comfy / "models" / "unet" / "flux.safetensors").read_bytes(), b"weights")
+
+    def test_missing_volume_is_rejected(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as raw:
+            with self.assertRaises(FileNotFoundError):
+                handler.link_models(Path(raw), Path(raw) / "ComfyUI")
+
+    def test_status_parser(self) -> None:
+        status, output, error = runpod_client.interpret_status(
+            {"status": "COMPLETED", "output": {"output_key": "outputs/studio-1.png"}}
+        )
+        self.assertEqual(status, "COMPLETED")
+        self.assertEqual(runpod_client.output_key(output), "outputs/studio-1.png")
+        self.assertIsNone(error)
+        status, output, error = runpod_client.interpret_status(
+            {"status": "COMPLETED", "output": {"error": "weights missing"}}
+        )
+        self.assertEqual(status, "FAILED")
+        self.assertIn("weights", error or "")
+        self.assertEqual(runpod_client.interpret_status({"status": "IN_QUEUE"})[0], "IN_QUEUE")
+        with self.assertRaises(ValueError):
+            runpod_client.require_endpoint_id("not an id")
 
 
 class DryRunTests(unittest.TestCase):

@@ -1,141 +1,122 @@
 # AI Image Studio
 
-One-shot image jobs in the owner's AWS account. A photo and a prompt go in, a PNG comes back in a private bucket, and the GPU machine is terminated. Nothing stays running between jobs.
+One-shot image jobs. The GPU runs on [RunPod serverless](https://docs.runpod.io/serverless/overview) and scales to zero. Photos and finished PNGs live in a private S3 bucket in the owner's AWS account. Terraform creates that bucket, a budget alarm, and an IAM user that can touch only the bucket. It does not create the RunPod endpoint.
 
-ComfyUI does the work: FLUX.1 schnell for text-to-image, image-to-image, and masked edits, and optional SDXL with IP-Adapter when a reference photo is passed. The stack is Terraform, tagged `project=ai-image-studio`, in its own VPC.
+ComfyUI does the work: FLUX.1 schnell for text-to-image, image-to-image, and masked edits, and optional SDXL with IP-Adapter for a reference photo.
 
-## Why the weights are not baked into an image
+## Weights: network volume, not the image
 
-Each job boots a new machine with a new disk. A custom AMI would store the weights in an EBS snapshot, about **$0.05 per GB-month in Sydney**. A 60–120 GB snapshot (drivers, PyTorch, ComfyUI, and the ~23 GB FLUX set) is about **$3–$6 a month**, and the new disk still has to read those blocks from snapshot storage on every boot. That first read is not faster than copying the same bytes from S3.
+RunPod bills a network volume all the time, and a container disk only while a worker is running. Public rates checked against RunPod's docs and pricing page (November 2026):
 
-Fast Snapshot Restore would make that first read fast. It is billed per snapshot per Availability Zone for every hour it is enabled, on the order of **$0.75–$1 per hour**. Left on for sporadic jobs that is several hundred dollars a month. Do not enable it.
+| | Idle | Cold start |
+| --- | --- | --- |
+| Network volume (this stack) | about **$2.80/month** for 40 GB at $0.07/GB | slim image pull, then read weights at roughly 200–400 MB/s |
+| Weights baked into the image | about **$0** of RunPod storage while scaled to zero | every cold worker pulls a ~30 GB image before it can load the model |
 
-Baking the weights into the container has the same shape. ECR is about **$0.10 per GB-month**, so a ~35 GB image is about **$3.50 a month**, and every job must pull the whole image before ComfyUI can start.
+A baked image is a couple of dollars cheaper per month and slower to start, because a scale-to-zero worker on a new host does not keep that image cached. RunPod's own guidance is to put models on a network volume so workers are not re-downloading them. Container disk is about $0.10/GB/month and is charged only while the worker exists, so a 15 GB disk for a few minutes is a fraction of a cent.
 
-The default is a slim worker image (ComfyUI and its Python dependencies only) plus the weights in the private S3 bucket:
+The 24 GB Flex GPU tier (L4, 3090, A5000, or a 24 GB MIG slice) is **$0.75 per hour**, billed per second from worker start until it stops. With minimum workers at 0 and a 5 second idle timeout, idle GPU cost is $0.
 
-| | Idle per month | Cold start |
-| --- | ---: | --- |
-| Slim image + S3 weights (this stack) | about $1.50–$2.50 | about 12–20 minutes |
-| Weights baked into an AMI, no fast restore | about $3–$6 | about the same, sometimes slower |
-| Fast Snapshot Restore left on | hundreds of dollars | a few minutes |
-| Weights baked into the container | about $3.50 plus the base image | a single large pull, not faster |
+A later one-shot is about 3–6 minutes of worker time, roughly **$0.04–$0.08**, plus the volume. Ten such jobs in a month are about **$3.50** all-in ($2.80 volume + GPU + well under $1 of S3). The first seed of the volume is a one-time download on a pod you stop afterwards, not on the serverless GPU.
 
-S3 Standard in Sydney is about **$0.025 per GB-month**. Twenty-five gigabytes of weights is under a dollar. The slim image in ECR is roughly 8–12 GB, about **$0.80–$1.20**. There is no NAT gateway, no idle EBS volume, and no instance between jobs.
+## What Terraform creates
 
-## Architecture
+- S3 bucket, SSE-S3, block public access, TLS required, not versioned. Job inputs expire after 14 days. Outputs stay until you delete them or set `output_retention_days`.
+- AWS Budget email at 50%, 80%, 100%, and the 100% forecast, tagged `project=ai-image-studio`. Default limit **$10**. This is AWS spend only. RunPod bills separately.
+- IAM user `ai-image-studio` with a policy that can list and read/write only that bucket. Terraform does not create access keys.
 
-```text
-studio.py run
-  |  upload photo + workflow JSON
-  v
-private S3 (SSE-S3, no public access, not versioned)
-  weights/   jobs/<id>/   outputs/<id>.png
-  ^
-  |  sync weights, run ComfyUI, upload PNG, exit
-AWS Batch  (minimum 0 vCPUs, one g6.xlarge, disk deleted on terminate)
-```
-
-| Piece | What it does |
-| --- | --- |
-| VPC `10.42.0.0/16` | One public subnet, no NAT. An S3 gateway endpoint is free. |
-| Security group | No inbound rules. Egress is 443, 80, and DNS. |
-| Network ACL | Return traffic to ephemeral ports only. 22 and 8188 are not allowed in. |
-| Batch | Managed EC2 compute environment, `g6.xlarge`, minimum and desired vCPUs 0, maximum 4. One job at a time. |
-| Root disk | 100 GB encrypted gp3, created with the instance, `deleteOnTermination`. Not billed while the queue is empty. |
-| Worker image | ComfyUI v0.45.0 and IP-Adapter. No weights. |
-| Weights | `s3://<bucket>/weights/`. The first job downloads them from Hugging Face and writes them back. Later jobs only sync from S3. |
-| Reconciler | Every five minutes, cancel jobs older than the timeout, terminate worker instances older than that plus 15 minutes, and delete detached worker disks older than 30 minutes. |
-| Budget | Email at 50%, 80%, 100%, and the 100% forecast, filtered to `project=ai-image-studio`. |
-
-ComfyUI listens on `127.0.0.1` inside the container. IMDSv2 is required. The instance profile hop limit is 2, which ECS needs.
+There is no VPC, NAT gateway, or GPU instance in AWS.
 
 ## Prerequisites
 
-- Terraform 1.5 or newer, AWS CLI v2, and `zip`.
-- Credentials that can create the VPC, Batch, ECR, CodeBuild, Lambda, S3, IAM, SSM, and a budget.
-- Python 3.9 or newer for the client. It uses the standard library only.
-- **G-instance vCPU quota in Sydney (`ap-southeast-2`).** `g6.xlarge` is 4 vCPUs. In Service Quotas, request **Running On-Demand G and VT instances** and, if the account lists it separately, **Running On-Demand G6 instances**. A quota of zero makes the job sit `RUNNABLE` until Batch cancels it after 30 minutes. The increase does not reserve a machine and does not cost anything until a job runs.
-- Billing access to activate the `project` cost allocation tag and to confirm the budget email.
+- Terraform 1.5+, AWS CLI v2, Python 3.9+, and Docker if you build the image yourself.
+- A RunPod account and API key.
+- AWS credentials allowed to create S3, IAM, and Budgets for the deploy. Day-to-day keys are the limited user created by the stack.
 
 ## Deploy
+
+### 1. AWS bucket and IAM
 
 ```bash
 export AWS_REGION=ap-southeast-2
 export ALERT_EMAIL=you@example.com
-# Optional. Needed only if a required download is rejected, or for the gated SDXL checkpoint.
-# export HF_TOKEN=hf_...
 ./scripts/deploy.sh
+```
+
+Activate the `project` cost allocation tag in Billing, and accept the budget confirmation email.
+
+Create an access key for the IAM user `ai-image-studio` in the IAM console. Export it in the shell. Do not commit it and do not put it in Terraform.
+
+```bash
+export AWS_ACCESS_KEY_ID=...
+export AWS_SECRET_ACCESS_KEY=...
+export AWS_REGION=ap-southeast-2
+export S3_BUCKET="$(cd infra && terraform output -raw bucket_name)"
+```
+
+Use the same variables on the RunPod endpoint (below), except `S3_BUCKET` is passed per job by the CLI. The endpoint needs the access key, secret, and region so the worker can read the photo and write the PNG.
+
+### 2. Worker image
+
+```bash
 ./scripts/build-image.sh
 ```
 
-`./scripts/build-image.sh` is the one-command image build and rebuild. It zips the worker, uploads it, and waits for CodeBuild to push `ai-image-studio-worker:worker`. Run it again after changing the Dockerfile or the pinned ComfyUI revision. It does not download or store model weights.
+That only builds a local image tagged `ai-image-studio-worker`. Push it to the registry your RunPod account uses (Docker Hub or GHCR), then select that tag on the endpoint. Rebuild the same way after a ComfyUI pin change. The image does not contain weights.
 
-Copy `infra/terraform.tfvars.example` to `infra/terraform.tfvars` if you prefer a file over environment variables. Optional overrides: `INSTANCE_TYPE`, `MAX_VCPUS`, `JOB_TIMEOUT_MINUTES`, `ROOT_VOLUME_GB`, `MONTHLY_BUDGET_USD`, `OUTPUT_RETENTION_DAYS`.
+### 3. Network volume and one-time seed
 
-After the first deploy:
+In the RunPod console, create a **40 GB** network volume in the datacenter where the endpoint will run. Attach it to a temporary pod that uses this image, set `HF_TOKEN` if a download is gated, and run:
 
-1. Activate the `project` cost allocation tag in Billing. Until it is active, the budget cannot see this stack. The reconciler and the Batch timeout do not depend on it.
-2. Accept the AWS Budgets confirmation email.
+```bash
+python /opt/worker/seed_weights.py
+```
+
+Stop and terminate that pod when the files are under `/runpod-volume/models`. Storage billing continues; GPU billing stops. The optional SDXL and IP-Adapter files need the token and a license acceptance on Hugging Face. Without the token those files are skipped and `--reference` fails until you seed them.
+
+### 4. Serverless endpoint
+
+Create a serverless endpoint with:
+
+| Setting | Value |
+| --- | --- |
+| Image | the tag you pushed |
+| GPU | 24 GB Flex tier (L4 / 3090 / A5000), $0.75/hour |
+| Min workers | **0** |
+| Max workers | **1** |
+| Idle timeout | **5 seconds** |
+| Container disk | 15 GB is enough |
+| Network volume | the volume from step 3, mounted at `/runpod-volume` |
+| Environment | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_DEFAULT_REGION` |
+
+Do not put `RUNPOD_API_KEY` on the worker. That key stays on your laptop.
+
+```bash
+export RUNPOD_API_KEY=...
+export RUNPOD_ENDPOINT_ID=...
+```
 
 ## Run a job
 
 ```bash
-python3 cli/studio.py run \
-  --input photo.jpg \
-  --prompt "same subject, evening light"
+python3 cli/studio.py run --input photo.jpg --prompt "same subject, evening light"
 
-# masked edit: white pixels are regenerated, black pixels stay
 python3 cli/studio.py run \
-  --input photo.jpg \
-  --mask mask.png \
+  --input photo.jpg --mask mask.png \
   --prompt "replace the background with a plain studio sweep"
 
-# text only
 python3 cli/studio.py run --prompt "a red ceramic teapot on a wooden table, soft daylight"
 
-# reference photo (SDXL + IP-Adapter). Do not combine with --input.
 python3 cli/studio.py run \
   --reference photo.jpg \
   --prompt "watercolor illustration of the subject"
 ```
 
-`./scripts/run.sh` is the same command. `--dry-run` prints the workflow and does not call AWS.
+`./scripts/run.sh` is the same command. `--dry-run` prints the workflow and does not call AWS or RunPod.
 
-The client uploads the photo and the workflow, submits one Batch job, and waits. The worker syncs weights from S3, starts ComfyUI, writes `outputs/<job-id>.png`, and exits. Batch then terminates the instance and its disk. The PNG is also saved under `outputs/` locally.
+The client uploads the photo to `s3://$S3_BUCKET/jobs/<id>/`, submits `{bucket, job_id}` to the endpoint, polls until the worker finishes, and downloads `outputs/<id>.png`. The worker links `/runpod-volume/models` over ComfyUI's model folder, runs the workflow on `127.0.0.1`, and writes the PNG back to the bucket. When the queue is empty the worker exits and RunPod scales it to zero.
 
-The first job also fills `weights/` from Hugging Face, so it can take 45–90 minutes. Later jobs are the 12–20 minute cold start: launch, pull the slim image, sync about 23 GB from S3, load the model, generate.
-
-Logs for a failed job are in CloudWatch `/ai-image-studio/worker`. `./scripts/logs.sh` lists the S3 log prefix; worker logs themselves are in CloudWatch.
-
-If a job is killed because the machine runs out of memory, redeploy with `INSTANCE_TYPE=g6.2xlarge MAX_VCPUS=8`. That instance has 32 GiB of RAM. Check the current Sydney price before switching.
-
-## Costs
-
-Prices below are Sydney (`ap-southeast-2`) estimates in USD, before tax. Re-check the [EC2](https://aws.amazon.com/ec2/pricing/on-demand/), [S3](https://aws.amazon.com/s3/pricing/), [ECR](https://aws.amazon.com/ecr/pricing/), and [EBS](https://aws.amazon.com/ebs/pricing/) pages. A previous measurement in this account put `g6.2xlarge` at $1.271 per hour; `g6.xlarge` is the smaller default and is about **$1.05 per hour**.
-
-**Idle, per month**
-
-| Item | Estimate |
-| --- | ---: |
-| S3 weights, about 25 GB | under $1 |
-| ECR slim image, about 8–12 GB | $0.80–$1.20 |
-| Logs, job inputs, build zip (they expire) | cents |
-| EBS, NAT, public IPv4, GPU | $0 |
-| **Typical idle total** | **about $1.50–$2.50** |
-
-**One job**
-
-The instance also pays for a public IPv4 address ($0.005 per hour) and the 100 GB root disk (about $0.013 per hour) only while it exists.
-
-| Job | Time | About |
-| --- | --- | ---: |
-| Later one-shot (weights already in S3) | 12–20 minutes | $0.25–$0.40 |
-| First job, which also downloads the weights | 45–90 minutes | $0.80–$1.70 |
-
-A month with ten ordinary jobs is about **$5–$7** all-in, versus roughly $15–$20 of idle disk on the earlier always-stopped design even if it was never used.
-
-The budget default is $50. It sends email. It does not itself terminate a running job; the Batch timeout (3 hours) and the reconciler do that.
+White pixels in a mask are regenerated. Do not pass `--reference` and `--input` together.
 
 ## Models
 
@@ -148,37 +129,31 @@ The budget default is $50. It sends email. It does not itself terminate a runnin
 | `ip_adapter_sdxl` | IP-Adapter Plus SDXL | Apache-2.0 | no |
 | `clip_vision_vit_h` | CLIP vision encoder | see the h94/IP-Adapter model card | no |
 
-The stack does not add extra checkpoints. SDXL is gated: accept the license and set `HF_TOKEN` before a reference job, or that download is skipped and the reference job fails until the file is in `weights/`.
-
 ## Teardown
 
-Copy out any `outputs/` objects you want to keep. Destroy deletes the bucket, including weights and images.
+RunPod resources are deleted in the RunPod console (endpoint first, then the network volume). Terraform does not see them.
 
 ```bash
 CONFIRM_DESTROY=yes ALERT_EMAIL=you@example.com AWS_REGION=ap-southeast-2 ./scripts/destroy.sh
 ```
 
-The CodeBuild and Batch resources go with the stack. ECR images are removed because the repository is set to force-delete.
+That deletes the bucket, including images, the budget, and the IAM user. Copy `outputs/` out first if you want to keep them.
 
 ## Validate
 
-No AWS calls and no resource creation:
+No AWS calls and no RunPod calls:
 
 ```bash
 ./scripts/validate.sh
 ```
 
-That is `terraform fmt -check`, `terraform init -backend=false`, `terraform validate`, the Python unit tests, and shellcheck.
-
 ## Layout
 
 | Path | Purpose |
 | --- | --- |
-| `infra/` | Terraform: network, bucket, Batch, ECR, CodeBuild, reconciler, budget. |
-| `worker/Dockerfile` | Slim image. No model weights. |
-| `worker/entrypoint.py` | Sync weights, run one workflow, upload the PNG, exit. |
-| `worker/reconcile.py` | Orphan jobs, instances, and detached disks. |
-| `config/models.manifest.json` | Weight URLs and the pinned filenames. |
+| `infra/` | S3 bucket, budget, IAM user and policy. |
+| `worker/Dockerfile` | Slim image. No weights. |
+| `worker/handler.py` | RunPod handler. |
+| `worker/seed_weights.py` | One-time download onto the network volume. |
 | `cli/studio.py` | `run`. |
-| `scripts/build-image.sh` | One-command image build and rebuild. |
-| `infra/iam-operator-policy.example.json` | Day-to-day IAM. Replace `REGION`, `ACCOUNT`, and `BUCKET`. Deploy itself needs permission to create the stack. |
+| `scripts/build-image.sh` | Local image build. Does not push. |

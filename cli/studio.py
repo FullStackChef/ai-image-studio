@@ -13,6 +13,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from runpod_client import get_json, interpret_status, output_key, post_json, require_endpoint_id, run_url, status_url
 from workflows import (
     DEFAULT_MANIFEST,
     GenerationRequest,
@@ -66,17 +67,6 @@ def resolve_region(explicit: str | None) -> str:
     if region and region != "None":
         return region
     raise SystemExit("error: set --region or AWS_REGION")
-
-
-def ssm_value(cfg: AwsConfig, name: str) -> str:
-    result = run_aws(
-        cfg,
-        ["ssm", "get-parameter", "--name", name, "--query", "Parameter.Value", "--output", "text"],
-    )
-    value = result.stdout.strip()
-    if not value or value == "None":
-        raise SystemExit(f"error: SSM parameter {name} is empty. Deploy the stack first.")
-    return value
 
 
 def build_request(args: argparse.Namespace) -> GenerationRequest:
@@ -147,13 +137,19 @@ def cmd_run(args: argparse.Namespace) -> int:
         sys.stdout.write("\n")
         return 0
 
+    api_key = os.environ.get("RUNPOD_API_KEY", "")
+    if not api_key:
+        raise SystemExit("error: set RUNPOD_API_KEY")
+    endpoint_id = require_endpoint_id(args.endpoint or os.environ.get("RUNPOD_ENDPOINT_ID", ""))
     cfg = AwsConfig(resolve_region(args.region), args.profile)
-    bucket = args.bucket or ssm_value(cfg, "/ai-image-studio/bucket-name")
-    queue = args.job_queue or ssm_value(cfg, "/ai-image-studio/job-queue")
-    definition = args.job_definition or ssm_value(cfg, "/ai-image-studio/job-definition")
+    bucket = args.bucket or os.environ.get("S3_BUCKET")
+    if not bucket:
+        raise SystemExit("error: set S3_BUCKET or pass --bucket (terraform output bucket_name)")
     for item in files:
         run_aws(cfg, ["s3", "cp", str(item["path"]), f"s3://{bucket}/{item['key']}", "--sse", "AES256"])
-    request_json = json.dumps({"workflow": workflow, "save_node": save_node, "files": payload["files"], "mode": request.mode})
+    request_json = json.dumps(
+        {"workflow": workflow, "save_node": save_node, "files": payload["files"], "mode": request.mode}
+    )
     upload = subprocess.run(
         aws_command(cfg, ["s3", "cp", "-", f"s3://{bucket}/jobs/{job_id}/request.json", "--sse", "AES256"]),
         input=request_json,
@@ -164,74 +160,45 @@ def cmd_run(args: argparse.Namespace) -> int:
     if upload.returncode != 0:
         raise SystemExit(f"error: uploading the job request failed: {(upload.stderr or '').strip()}")
 
-    overrides = json.dumps(
-        {
-            "environment": [
-                {"name": "JOB_ID", "value": job_id},
-                {"name": "JOB_BUCKET", "value": bucket},
-                {"name": "AWS_REGION", "value": cfg.region},
-            ]
-        }
-    )
-    submitted = run_aws(
-        cfg,
-        [
-            "batch",
-            "submit-job",
-            "--job-name",
-            job_id,
-            "--job-queue",
-            queue,
-            "--job-definition",
-            definition,
-            "--container-overrides",
-            overrides,
-            "--query",
-            "jobId",
-            "--output",
-            "text",
-        ],
-    )
-    batch_id = submitted.stdout.strip()
-    eprint(f"submitted {job_id} ({batch_id})")
-    status = wait_for_job(cfg, batch_id, args.timeout)
-    if status != "SUCCEEDED":
-        raise SystemExit(f"error: job {job_id} finished as {status}. Logs: /ai-image-studio/worker")
-    result_raw = run_aws(cfg, ["s3", "cp", f"s3://{bucket}/jobs/{job_id}/result.json", "-"])
-    result = json.loads(result_raw.stdout)
+    submitted = post_json(run_url(endpoint_id), {"input": {"bucket": bucket, "job_id": job_id}}, api_key)
+    runpod_id = submitted.get("id")
+    if not runpod_id:
+        raise SystemExit(f"error: RunPod did not return a job id: {submitted}")
+    eprint(f"submitted {job_id} ({runpod_id})")
+    finished = wait_for_runpod(endpoint_id, str(runpod_id), api_key, args.timeout)
+    key = output_key(finished)
     output = args.output or Path("outputs") / f"{job_id}.png"
     output.parent.mkdir(parents=True, exist_ok=True)
-    run_aws(cfg, ["s3", "cp", f"s3://{bucket}/{result['output_key']}", str(output)])
+    run_aws(cfg, ["s3", "cp", f"s3://{bucket}/{key}", str(output)])
     print(f"local: {output}")
-    print(f"s3: s3://{bucket}/{result['output_key']}")
+    print(f"s3: s3://{bucket}/{key}")
     return 0
 
 
-def wait_for_job(cfg: AwsConfig, batch_id: str, timeout: int) -> str:
+def wait_for_runpod(endpoint_id: str, runpod_id: str, api_key: str, timeout: int) -> dict:
     deadline = time.time() + timeout
     last = ""
     while time.time() < deadline:
-        result = run_aws(
-            cfg,
-            ["batch", "describe-jobs", "--jobs", batch_id, "--query", "jobs[0].status", "--output", "text"],
-            timeout=60,
-        )
-        status = result.stdout.strip()
+        body = get_json(status_url(endpoint_id, runpod_id), api_key)
+        status, output, error = interpret_status(body)
         if status != last:
             eprint(f"job status {status}")
             last = status
-        if status in {"SUCCEEDED", "FAILED"}:
-            return status
-        time.sleep(15)
-    raise SystemExit("error: timed out waiting for the Batch job")
+        if status == "COMPLETED":
+            if output is None:
+                raise SystemExit("error: RunPod completed without an output_key")
+            return output
+        if error or status in {"FAILED", "CANCELLED", "TIMED_OUT"}:
+            raise SystemExit(f"error: RunPod job {status}: {error}")
+        time.sleep(3)
+    raise SystemExit("error: timed out waiting for the RunPod job")
 
 
 def add_aws_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--region", default=os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION"))
     parser.add_argument("--profile", default=os.environ.get("AWS_PROFILE"))
-    parser.add_argument("--bucket", default=None)
-    parser.add_argument("--job-queue", default=None)
-    parser.add_argument("--job-definition", default=None)
+    parser.add_argument("--bucket", default=os.environ.get("S3_BUCKET"))
+    parser.add_argument("--endpoint", default=os.environ.get("RUNPOD_ENDPOINT_ID"))
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -257,7 +224,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--output", type=Path)
     run.add_argument("--timeout", type=int, default=10800)
     run.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
-    run.add_argument("--dry-run", action="store_true", help="Print the job JSON and do not call AWS.")
+    run.add_argument("--dry-run", action="store_true", help="Print the job JSON and do not call AWS or RunPod.")
     return parser
 
 

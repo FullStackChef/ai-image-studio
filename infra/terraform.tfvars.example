@@ -1,7 +1,3 @@
-aws_region          = "ap-southeast-2"
-alert_email         = "you@example.com"
-instance_type       = "g6.xlarge"
-max_vcpus           = 4
-monthly_budget_usd  = 50
-job_timeout_minutes = 180
-root_volume_gb      = 100
+aws_region         = "ap-southeast-2"
+alert_email        = "you@example.com"
+monthly_budget_usd = 10

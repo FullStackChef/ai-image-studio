@@ -1,31 +1,17 @@
 output "bucket_name" {
-  description = "Private bucket. Weights live under weights/, results under outputs/."
+  description = "Private bucket for job inputs and generated images. Set this as S3_BUCKET."
   value       = aws_s3_bucket.studio.bucket
-}
-
-output "vpc_id" {
-  description = "VPC dedicated to this project."
-  value       = aws_vpc.main.id
 }
 
 output "region" {
   value = var.aws_region
 }
 
-output "job_queue" {
-  description = "Batch queue. It stays at zero instances when no job is running."
-  value       = aws_batch_job_queue.gpu.name
+output "iam_user" {
+  description = "User limited to the studio bucket. Create an access key in the IAM console and export it. Terraform does not create keys."
+  value       = aws_iam_user.studio.name
 }
 
-output "job_definition" {
-  value = aws_batch_job_definition.worker.name
-}
-
-output "worker_image" {
-  description = "ECR image scripts/build-image.sh publishes. It does not contain model weights."
-  value       = "${aws_ecr_repository.worker.repository_url}:${var.image_tag}"
-}
-
-output "image_build_project" {
-  value = aws_codebuild_project.worker.name
+output "iam_policy_arn" {
+  value = aws_iam_policy.studio_s3.arn
 }
