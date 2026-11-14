@@ -1,0 +1,21 @@
+[Unit]
+Description=ComfyUI
+After=network-online.target local-fs.target
+Wants=network-online.target
+RequiresMountsFor=/data
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/data/ComfyUI
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=/etc/ai-image-studio.env
+ExecStart=/usr/local/sbin/comfyui-start
+Restart=on-failure
+RestartSec=10
+StandardOutput=append:/var/log/comfyui.log
+StandardError=append:/var/log/comfyui.log
+
+[Install]
+WantedBy=multi-user.target

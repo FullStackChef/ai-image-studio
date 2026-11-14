@@ -1,0 +1,95 @@
+{
+  "version": 1,
+  "comfyui": {
+    "git_url": "https://github.com/comfyanonymous/ComfyUI.git",
+    "ref": "v0.45.0"
+  },
+  "custom_nodes": [
+    {
+      "name": "ComfyUI_IPAdapter_plus",
+      "git_url": "https://github.com/cubiq/ComfyUI_IPAdapter_plus.git",
+      "ref": "a0f451a5113cf9becb0847b92884cb10cbdec0ef"
+    }
+  ],
+  "pytorch_index_url": "https://download.pytorch.org/whl/cu126",
+  "models": [
+    {
+      "id": "flux_unet",
+      "filename": "flux1-schnell-fp8.safetensors",
+      "dest": "models/unet/flux1-schnell-fp8.safetensors",
+      "urls": [
+        "https://huggingface.co/Comfy-Org/flux1-schnell/resolve/main/flux1-schnell-fp8.safetensors"
+      ],
+      "required": true,
+      "min_bytes": 15000000000,
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "flux_clip_l",
+      "filename": "clip_l.safetensors",
+      "dest": "models/clip/clip_l.safetensors",
+      "urls": [
+        "https://huggingface.co/comfyanonymous/flux_text_encoders/resolve/main/clip_l.safetensors"
+      ],
+      "required": true,
+      "min_bytes": 200000000,
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "flux_t5",
+      "filename": "t5xxl_fp8_e4m3fn.safetensors",
+      "dest": "models/clip/t5xxl_fp8_e4m3fn.safetensors",
+      "urls": [
+        "https://huggingface.co/comfyanonymous/flux_text_encoders/resolve/main/t5xxl_fp8_e4m3fn.safetensors"
+      ],
+      "required": true,
+      "min_bytes": 4000000000,
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "flux_vae",
+      "filename": "ae.safetensors",
+      "dest": "models/vae/ae.safetensors",
+      "urls": [
+        "https://huggingface.co/Comfy-Org/Lumina-Image-2/resolve/main/split_files/vae/ae.safetensors",
+        "https://huggingface.co/black-forest-labs/FLUX.1-schnell/resolve/main/ae.safetensors"
+      ],
+      "required": true,
+      "min_bytes": 300000000,
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "sdxl_base",
+      "filename": "sd_xl_base_1.0.safetensors",
+      "dest": "models/checkpoints/sd_xl_base_1.0.safetensors",
+      "urls": [
+        "https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/resolve/main/sd_xl_base_1.0.safetensors"
+      ],
+      "required": false,
+      "min_bytes": 5000000000,
+      "license": "OpenRAIL++"
+    },
+    {
+      "id": "ip_adapter_sdxl",
+      "filename": "ip-adapter-plus_sdxl_vit-h.safetensors",
+      "dest": "models/ipadapter/ip-adapter-plus_sdxl_vit-h.safetensors",
+      "urls": [
+        "https://huggingface.co/h94/IP-Adapter/resolve/main/sdxl_models/ip-adapter-plus_sdxl_vit-h.safetensors"
+      ],
+      "required": false,
+      "min_bytes": 700000000,
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "clip_vision_vit_h",
+      "filename": "CLIP-ViT-H-14-laion2B-s32B-b79K.safetensors",
+      "dest": "models/clip_vision/CLIP-ViT-H-14-laion2B-s32B-b79K.safetensors",
+      "urls": [
+        "https://huggingface.co/h94/IP-Adapter/resolve/main/models/image_encoder/model.safetensors"
+      ],
+      "required": false,
+      "min_bytes": 2000000000,
+      "license": "see h94/IP-Adapter model card"
+    }
+  ]
+}
